@@ -202,7 +202,10 @@ def test_no_profile_means_no_findings():
 # ------------------------------------------------------------- detection
 
 def test_wholesale_technical_change_is_flagged():
-    p = FP.build_profile("abdul@company.com", _samples(CASUAL))
+    # A CRITICAL verdict now requires deep history (25+ messages). Below that
+    # the layer caps itself, because on real mail a five-message baseline was
+    # confidently accusing a university admissions office.
+    p = FP.build_profile("abdul@company.com", _samples(CASUAL * 2))
     findings = layer2.run(_view(
         "hey can you check this",
         x_mailer="PHPMailer 6.8.0", mime_signature="multipart/mixed(text/html)",

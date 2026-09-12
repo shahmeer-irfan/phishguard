@@ -58,6 +58,32 @@ REDIRECT_PARAMS = {
     "target", "r", "u", "link", "out", "forward", "to",
 }
 
+# Click-tracking domains. Practically every commercial sender rewrites its
+# links through one of these, so the anchor text naming the brand while the
+# href points at a tracker is the normal shape of legitimate mail - not a
+# mismatch. Left unhandled this was the single largest remaining false-positive
+# source on a real mailbox, flagging Binance, Airbnb and Stripe notifications.
+#
+# Suppression is conditional on DMARC: the tracker only gets the benefit of the
+# doubt when the sending domain has already been cryptographically verified.
+TRACKING_DOMAINS = {
+    "awstrack.me", "sendgrid.net", "ct.sendgrid.net", "sparkpostmail.com",
+    "mailgun.org", "mandrillapp.com", "list-manage.com", "mcsv.net", "mcdlv.net",
+    "rsgsv.net", "createsend.com", "cmail19.com", "cmail20.com", "exct.net",
+    "rs6.net", "hubspotlinks.com", "hs-sites.com", "pardot.com", "mktdns.com",
+    "sendibt2.com", "sendibm1.com", "sendibm3.com", "klclick.com", "klclick1.com",
+    "postmarkapp.com", "customeriomail.com", "intercom-mail.com", "braze.com",
+    "sparkpost.com", "mixmax.com", "yesware.com", "bnc.lt", "sng.link",
+    "app.link", "adj.st", "onelink.me", "go-mail.io", "mailanyone.net",
+    "email.mg", "links.notifications", "e.customeriomail.com", "mail.crayo.ai",
+}
+
+
+def is_tracker(link: "Link") -> bool:
+    host = link.host or ""
+    return any(host == d or host.endswith("." + d) for d in TRACKING_DOMAINS)
+
+
 DANGEROUS_SCHEMES = {"javascript", "data", "vbscript", "file"}
 
 _URL_RE = re.compile(
@@ -215,6 +241,14 @@ def anchor_claims_other_domain(link: Link) -> str | None:
     text = (link.anchor_text or "").strip()
     if not text or len(text) > 200 or not link.is_web:
         return None
+
+    # Prose containing dots is not a domain claim. A listing title like
+    # "3br.10pax.duty free. seaside apartment" was being parsed as a hostname
+    # and reported as a link mismatch on legitimate mail.
+    if " " in text or len(text.split(".")) > 5:
+        text_host = text.strip().strip("<>()[]").lower()
+        if " " in text_host:
+            return None
 
     claimed = parse_link(text, source="anchor_text")
     if claimed and claimed.host and "." in claimed.host:

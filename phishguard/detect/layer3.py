@@ -72,6 +72,11 @@ def _link_findings(links: list[U.Link], ctx: AnalysisContext,
     reference = set(ctx.reference_domains)
     emitted: set[str] = set()
 
+    # A verified sender is allowed to rewrite its own links through a tracker.
+    # Without DMARC the same rewrite proves nothing, so the exemption is not
+    # granted - an attacker can put any anchor text in front of any tracker.
+    sender_verified = (view.dmarc or "").lower() == "pass"
+
     def once(code: str) -> bool:
         """One finding per kind, however many links trigger it."""
         if code in emitted:
@@ -103,8 +108,10 @@ def _link_findings(links: list[U.Link], ctx: AnalysisContext,
                           "real_host": link.host},
             ))
 
+        tracked = sender_verified and U.is_tracker(link)
+
         claimed = U.anchor_claims_other_domain(link)
-        if claimed and once("URL_ANCHOR_MISMATCH"):
+        if claimed and not tracked and once("URL_ANCHOR_MISMATCH"):
             out.append(Finding(
                 code="URL_ANCHOR_MISMATCH", layer=3, severity=Severity.HIGH, weight=0.74,
                 human_text=f"A link says it goes to {claimed} but actually goes to "
@@ -152,6 +159,17 @@ def _link_findings(links: list[U.Link], ctx: AnalysisContext,
             ))
 
         redirect = U.open_redirect_target(link)
+        if redirect:
+            # airbnb.com forwarding to airbnb.sng.link is a deep-link service,
+            # not a borrowed reputation. Only cross-organisation hops matter.
+            target = U.parse_link(redirect, source="redirect")
+            same_brand = bool(target and target.org and (
+                target.org == link.org
+                or D.registrable_label(target.org) == D.registrable_label(link.org)))
+            if same_brand:
+                redirect = None
+        if redirect and tracked:
+            redirect = None
         if redirect and once("URL_OPEN_REDIRECT"):
             out.append(Finding(
                 code="URL_OPEN_REDIRECT", layer=3, severity=Severity.MEDIUM, weight=0.52,
@@ -179,7 +197,7 @@ def _link_findings(links: list[U.Link], ctx: AnalysisContext,
 
         # Credential wording is only interesting off a domain the user trusts;
         # on a known domain it is just the real login page.
-        if link.org not in reference:
+        if link.org not in reference and not tracked:
             words = U.credential_words_in(link)
             if len(words) >= 2 and once("URL_CREDENTIAL_PATH"):
                 out.append(Finding(
@@ -233,7 +251,11 @@ def _html_findings(html: HtmlAnalysis, view: MessageView,
 
     # Concealed text is filter poisoning: bulk innocuous words invisible to the
     # reader, there to dilute the message for statistical spam classifiers.
-    if len(html.hidden_text) >= 200 and len(html.hidden_text) > html.visible_chars * 0.25:
+    # Almost every marketing email hides a preheader line, and many hide a
+    # whole accessibility block. This fired 1,197 times on a real mailbox. Only
+    # treat it as filter poisoning when the hidden text *dominates* the message
+    # and there is enough of it to actually shift a classifier.
+    if len(html.hidden_text) >= 1500 and len(html.hidden_text) > html.visible_chars * 1.5:
         out.append(Finding(
             code="HTML_HIDDEN_TEXT", layer=3, severity=Severity.MEDIUM, weight=0.46,
             human_text=f"This message hides {len(html.hidden_text)} characters of text that "
@@ -246,7 +268,7 @@ def _html_findings(html: HtmlAnalysis, view: MessageView,
     # Text baked into a picture cannot be read by any text-based check - which
     # is exactly why it is done.
     images = html.inline_images
-    if images and html.visible_chars < 120 and len(view.body_text.strip()) < 200:
+    if images and html.visible_chars < 60 and len(view.body_text.strip()) < 100:
         out.append(Finding(
             code="HTML_IMAGE_ONLY", layer=3, severity=Severity.MEDIUM, weight=0.44,
             human_text="This message is almost entirely a picture with no real text, which "

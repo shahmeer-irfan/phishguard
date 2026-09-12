@@ -33,6 +33,21 @@ from .db.store import Store
 from .parse.message import parse_rfc822
 
 
+def _reconfigure_stdio() -> None:
+    """Force UTF-8 output.
+
+    Windows consoles default to cp1252, and a single emoji in a subject line -
+    which real mail is full of - raises UnicodeEncodeError and kills the whole
+    command. Replacing unencodable characters is always better than losing the
+    report.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def _log_setup(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -624,6 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _reconfigure_stdio()
     args = build_parser().parse_args(argv)
     _log_setup(args.verbose)
     cfg = C.load()

@@ -46,6 +46,9 @@ STYLE_Z_NOTABLE = 1.2
 STYLE_Z_STRONG = 2.0
 STYLE_Z_MATCH = 0.8
 
+_SEVERITY_RANK = {Severity.INFO: 0, Severity.LOW: 1, Severity.MEDIUM: 2,
+                  Severity.HIGH: 3, Severity.CRITICAL: 4}
+
 _DIMENSION_LABELS = {
     "x_mailers": "mail app",
     "msgid_shapes": "message formatting",
@@ -57,9 +60,35 @@ _DIMENSION_LABELS = {
 }
 
 
+_AUTOMATED_LOCALPARTS = (
+    "no-reply", "noreply", "no_reply", "donotreply", "do-not-reply", "do_not_reply",
+    "automated", "automatic", "notification", "notifications", "alert", "alerts",
+    "mailer", "mail-daemon", "bounce", "bounces", "postmaster", "news", "newsletter",
+    "updates", "digest", "receipts", "billing", "invoice", "service", "system",
+    "info", "hello", "team", "support", "help", "care", "express", "account",
+)
+
+
+def is_automated_sender(view: MessageView, ctx: AnalysisContext) -> bool:
+    """Whether this address is a machine rather than a person.
+
+    Layer 2 asks "is someone else typing as this person". If there is no person
+    - it is a transactional system - the question is meaningless: bulk senders
+    rotate infrastructure, template their prose, and legitimately change both
+    every week. Running stylometry over them produced 811 fingerprint mismatches
+    and 176 style warnings on a real mailbox, essentially all false.
+    """
+    local = (view.from_addr or "").split("@", 1)[0].lower()
+    if any(tok in local for tok in _AUTOMATED_LOCALPARTS):
+        return True
+    contact = ctx.contact_for(view.from_addr)
+    # Never written back to, but writes to you constantly: a broadcaster.
+    return bool(contact and contact.outbound == 0 and contact.inbound >= 15)
+
+
 def run(view: MessageView, ctx: AnalysisContext) -> list[Finding]:
     profile = ctx.profile_for(view.from_addr) if view.from_addr else None
-    if profile is None:
+    if profile is None or is_automated_sender(view, ctx):
         return []
 
     out: list[Finding] = []
@@ -124,6 +153,16 @@ def _technical(view: MessageView, profile: FP.ContactProfile) -> list[Finding]:
         severity, weight = Severity.MEDIUM, 0.50
     else:
         severity, weight = Severity.LOW, 0.26
+
+    # Confidence is bounded by how much history backs the claim. Twelve
+    # messages is enough to notice something; it is not enough to accuse
+    # someone outright, and on real mail that distinction was the difference
+    # between a useful signal and flagging a university's own admissions office.
+    if tech.samples < 25:
+        ceiling = Severity.HIGH if tech.samples >= 18 else Severity.MEDIUM
+        if _SEVERITY_RANK[severity] > _SEVERITY_RANK[ceiling]:
+            severity = ceiling
+        weight = min(weight, 0.70 if tech.samples >= 18 else 0.45)
 
     if mid_thread and len(novel) >= 2:
         # Inside a live conversation the innocent explanations mostly evaporate:
@@ -236,7 +275,13 @@ def _behaviour(view: MessageView, profile: FP.ContactProfile) -> list[Finding]:
         from . import layer3
         links = layer3.extract_links(view)
         web = [l for l in links if l.is_web and l.org]
-        if web and not rel.ever_sent_links:
+        # An empty link corpus means nobody has analysed this contact's mail
+        # yet, not that they have never sent a link. Profiles are built before
+        # the first analyse pass populates message_links, so without this guard
+        # the check fired on almost every message - 1,872 of 2,298 in a real
+        # mailbox.
+        corpus_exists = bool(rel.link_orgs) or rel.sent_links > 0
+        if web and corpus_exists and not rel.ever_sent_links:
             out.append(Finding(
                 code="FIRST_EVER_LINK", layer=2, severity=Severity.MEDIUM, weight=0.38,
                 human_text=f"{profile.canonical_email} has never sent you a link before "

@@ -71,7 +71,11 @@ PROFILE_VERSION = "fp-1"
 
 # Below this, a profile is an anecdote rather than a baseline. Reporting a
 # "style mismatch" off three samples would be noise dressed as evidence.
-MIN_SAMPLES_TECHNICAL = 3
+# Matched to the stylometry floor after real-mail testing. At three samples the
+# profile cannot distinguish "unusual for this sender" from "not yet observed",
+# and it reported CRITICAL fingerprint mismatches on ordinary university mail
+# with five prior messages.
+MIN_SAMPLES_TECHNICAL = 12
 
 # Authorship attribution needs real samples. At five messages the estimate of a
 # contact's own variance is itself so noisy that ordinary short notes from the

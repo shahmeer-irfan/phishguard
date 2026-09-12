@@ -54,6 +54,12 @@ def _display_name_impersonation(
         return []
 
     targets = [t for t in ctx.impersonation_targets(name) if t.canonical_email != canon]
+
+    # A large sender uses many addresses under one domain - automated@airbnb.com
+    # and express@airbnb.com are both Airbnb, and treating either as an
+    # impersonation of the other flagged 1,364 messages in a real 2,300-message
+    # mailbox. Same organisational domain means same organisation.
+    targets = [t for t in targets if not D.same_org(t.domain, view.from_domain)]
     if not targets:
         return []
 

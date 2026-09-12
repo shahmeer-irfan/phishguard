@@ -20,10 +20,18 @@ from .urls import Link, parse_link
 # Elements whose text is markup, not prose.
 _NON_TEXT = {"script", "style", "head", "title", "meta", "link"}
 
-_HIDDEN_DECLS = (
-    "display:none", "visibility:hidden", "opacity:0",
-    "font-size:0", "font-size:1px", "font-size:0px", "font-size:0pt",
-    "max-height:0", "line-height:0", "mso-hide:all",
+# Void elements never get a closing tag. Two of them sit in _NON_TEXT, and
+# treating them as containers leaks skip-depth: a single <link rel="stylesheet">
+# in the head suppressed *every* subsequent text node, so a 31 KB marketing
+# email reported zero visible characters. That silently fed HTML_IMAGE_ONLY,
+# the hidden-text ratio, and Layer 2's style sampling - 643 false findings in a
+# real mailbox from one missing set membership.
+_VOID = {"meta", "link", "base", "br", "hr", "img", "input", "source",
+         "track", "wbr", "area", "col", "embed", "param"}
+
+# Declarations that hide an element *and everything inside it*.
+_SUPPRESSING_DECLS = (
+    "display:none", "visibility:hidden", "opacity:0", "mso-hide:all",
 )
 _INVISIBLE_COLOURS = {"#fff", "#ffffff", "white", "#fefefe", "transparent",
                       "rgba(0,0,0,0)", "#f8f8f8", "#fcfcfc"}
@@ -38,33 +46,45 @@ def _squash(style: str) -> str:
 
 
 def _is_hidden_style(style: str, attrs: dict[str, str]) -> bool:
-    """Whether an element is rendered invisible.
+    """Whether an element and its whole subtree are suppressed."""
+    squashed = _squash(style)
+    if any(decl in squashed for decl in _SUPPRESSING_DECLS):
+        return True
+    # The white-text check is deliberately gone. Without knowing the element's
+    # actual background it cannot distinguish concealed text from ordinary
+    # light-on-dark design, which legitimate marketing email uses constantly.
+    # Display, visibility, opacity and zero font-size are unambiguous; colour
+    # is not.
 
-    Covers the common family: display/visibility/opacity, zero font size, and
-    white-on-white. Zero dimensions count only on containers, since a 1x1 image
-    is a tracking pixel rather than concealed text.
+    return attrs.get("hidden") is not None
+
+
+def declared_font_size(style: str) -> float | None:
+    """Font size in px-equivalent, or None when the element declares none.
+
+    Separate from suppression because `font-size:0` does NOT hide a subtree -
+    it is the standard responsive-email idiom for collapsing whitespace between
+    inline-block columns, and the children set their own size back. Treating it
+    as concealment classified an entire 31 KB transactional email as hidden
+    text, and fired on 521 messages in a real mailbox.
+
+    Only the *nearest* declared size governs a given run of text, which is what
+    the parser now tracks.
     """
     squashed = _squash(style)
-    if any(decl in squashed for decl in _HIDDEN_DECLS):
-        return True
-
     m = _FONT_SIZE_RE.search(squashed)
-    if m:
-        try:
-            size = float(m.group(1))
-            unit = (m.group(2) or "px").lower()
-            if (unit in ("px", "pt") and size <= 2) or (unit in ("em", "rem") and size <= 0.15):
-                return True
-        except ValueError:
-            pass
-
-    m = _COLOR_RE.search(squashed)
-    if m and m.group(1).strip() in _INVISIBLE_COLOURS:
-        return True
-
-    if attrs.get("hidden") is not None:
-        return True
-    return False
+    if not m:
+        return None
+    try:
+        size = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "px").lower()
+    if unit in ("em", "rem"):
+        return size * 16
+    if unit == "pt":
+        return size * 1.333
+    return size
 
 
 @dataclass
@@ -116,7 +136,18 @@ class _Collector(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out = HtmlAnalysis()
         self._skip_depth = 0
-        self._hidden_stack: list[str] = []
+        self._depth = 0
+        # (depth, tag) of each element that started a hidden region. Tracking
+        # depth rather than tag name is the whole point: the previous version
+        # popped only on an exact tag match, so a single mismatched or unclosed
+        # tag - which marketing HTML is full of - left the parser permanently
+        # inside a "hidden" region and classified the entire remaining document
+        # as concealed text. One real email reported 0 visible and 848 hidden
+        # characters out of 31 KB.
+        self._hidden_stack: list[tuple[int, str]] = []
+        # (depth, px) of each element that declared a font size. Text is hidden
+        # when the nearest declaration is effectively zero.
+        self._font_stack: list[tuple[int, float]] = []
         self._anchor: Link | None = None
         self._anchor_text: list[str] = []
         self._form: FormRef | None = None
@@ -125,11 +156,13 @@ class _Collector(HTMLParser):
 
     @property
     def _hidden(self) -> bool:
-        return bool(self._hidden_stack)
+        if self._hidden_stack:
+            return True
+        return bool(self._font_stack) and self._font_stack[-1][1] <= 2.0
 
     def _push_hidden(self, tag: str, attrs: dict[str, str]) -> None:
         if _is_hidden_style(attrs.get("style", ""), attrs):
-            self._hidden_stack.append(tag)
+            self._hidden_stack.append((self._depth, tag))
 
     # -- HTMLParser hooks -------------------------------------------------
 
@@ -138,11 +171,11 @@ class _Collector(HTMLParser):
         attrs = {k.lower(): (v or "") for k, v in attrs_list}
 
         if tag in _NON_TEXT:
-            self._skip_depth += 1
+            if tag not in _VOID:
+                self._skip_depth += 1
             if tag == "script":
                 self.out.script_count += 1
             if tag == "meta":
-                self._skip_depth -= 1  # void element, never closed
                 if attrs.get("http-equiv", "").lower() == "refresh":
                     content = attrs.get("content", "")
                     m = re.search(r"url\s*=\s*['\"]?([^'\";]+)", content, re.I)
@@ -150,7 +183,12 @@ class _Collector(HTMLParser):
                         self.out.meta_refresh = m.group(1).strip()
             return
 
+        if tag not in _VOID:
+            self._depth += 1
         self._push_hidden(tag, attrs)
+        size = declared_font_size(attrs.get("style", ""))
+        if size is not None:
+            self._font_stack.append((self._depth, size))
 
         if tag == "a":
             self._anchor = parse_link(attrs.get("href", ""), source="html_anchor")
@@ -181,10 +219,17 @@ class _Collector(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
         if tag in _NON_TEXT:
-            self._skip_depth = max(0, self._skip_depth - 1)
+            if tag not in _VOID:
+                self._skip_depth = max(0, self._skip_depth - 1)
             return
-        if self._hidden_stack and self._hidden_stack[-1] == tag:
+        if tag not in _VOID:
+            self._depth = max(0, self._depth - 1)
+        # Drop every hidden region that started at or below the depth we just
+        # left, whatever tag it was opened with.
+        while self._hidden_stack and self._hidden_stack[-1][0] > self._depth:
             self._hidden_stack.pop()
+        while self._font_stack and self._font_stack[-1][0] > self._depth:
+            self._font_stack.pop()
         if tag == "a" and self._anchor is not None:
             self._anchor.anchor_text = " ".join("".join(self._anchor_text).split())[:300]
             self.out.links.append(self._anchor)

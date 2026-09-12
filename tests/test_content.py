@@ -59,10 +59,9 @@ def test_hidden_text_is_separated_from_visible():
         '<div>Real content here</div>'
         '<span style="display:none">poison words for the filter</span>'
         '<span style="font-size:0px">more poison</span>'
-        '<span style="color:#ffffff">white on white</span>'
     )
     assert "Real content here" in a.visible_text
-    for phrase in ("poison words", "more poison", "white on white"):
+    for phrase in ("poison words", "more poison"):
         assert phrase in a.hidden_text, phrase
         assert phrase not in a.visible_text
 
@@ -71,6 +70,33 @@ def test_script_and_style_text_is_not_body_text():
     a = analyse_html('<style>.x{color:red}</style><script>var a=1</script><p>hello</p>')
     assert a.visible_text.strip() == "hello"
     assert a.script_count == 1
+
+
+def test_white_text_is_not_treated_as_hidden():
+    """Dropped deliberately. Without knowing the element's background, white
+    text cannot be told apart from ordinary light-on-dark design, which real
+    marketing email uses constantly."""
+    a = analyse_html('<div style="color:#ffffff">Welcome back</div>')
+    assert "Welcome back" in a.visible_text
+
+
+def test_zero_font_size_wrapper_does_not_hide_its_children():
+    """`font-size:0` on a container is the standard responsive-email idiom for
+    collapsing whitespace between inline-block columns; children set their own
+    size back. Treating it as concealment classified an entire 31 KB
+    transactional email as hidden, and fired on 521 real messages."""
+    a = analyse_html(
+        '<td style="font-size:0px;padding:0;text-align:center">'
+        '<div style="font-size:14px">Your payment of Rs. 280 was successful.</div>'
+        '</td>')
+    assert "Your payment" in a.visible_text
+    assert a.hidden_text.strip() == ""
+
+
+def test_zero_font_size_on_a_leaf_still_hides():
+    a = analyse_html('<p>Visible.</p><span style="font-size:0">concealed</span>')
+    assert "concealed" in a.hidden_text
+    assert "Visible." in a.visible_text
 
 
 def test_malformed_html_does_not_raise():
@@ -172,9 +198,20 @@ def test_credential_form_is_hard_danger():
 
 
 def test_hidden_filler_text_flagged():
-    v = view(html="<p>Short note.</p><div style='display:none'>" + "lorem ipsum " * 40
+    """Real filter poisoning buries the message in invisible bulk."""
+    v = view(html="<p>Short note.</p><div style='display:none'>" + "lorem ipsum " * 200
                   + "</div>")
     assert "HTML_HIDDEN_TEXT" in codes(v)
+
+
+def test_marketing_preheader_is_not_filter_poisoning():
+    """Nearly every marketing email hides a preheader line, and many hide an
+    accessibility block too. The original threshold fired on 1,197 of 2,298
+    messages in a real mailbox - almost all of them legitimate."""
+    v = view(html="<div style='display:none'>Your booking is confirmed - view the "
+                  "details and manage your reservation in the app.</div>"
+                  "<h1>Booking confirmed</h1><p>" + "Real visible content. " * 30 + "</p>")
+    assert "HTML_HIDDEN_TEXT" not in codes(v)
 
 
 def test_findings_are_deduplicated_across_many_links():

@@ -18,6 +18,15 @@ from .context import AnalysisContext
 from . import domains as D
 from .view import MessageView
 
+# Domains that sign outbound mail for other organisations by design.
+_DELEGATED_SIGNERS = {
+    "gappssmtp.com", "amazonses.com", "sendgrid.net", "mailgun.org",
+    "mcsv.net", "mcdlv.net", "rsgsv.net", "sparkpostmail.com", "mandrillapp.com",
+    "postmarkapp.com", "sendinblue.com", "brevo.com", "zoho.com", "hubspot.com",
+    "salesforce.com", "intercom.io", "customeriomail.com", "klaviyomail.com",
+    "mailchimp.com", "constantcontact.com", "icloud.com", "outlook.com",
+}
+
 _DMARC_POLICY_RE = re.compile(r"dmarc\s*=\s*\w+[^;]*?\bp\s*=\s*(\w+)", re.I)
 _PASS = {"pass"}
 _FAIL = {"fail", "permerror"}
@@ -118,7 +127,11 @@ def run(view: MessageView, ctx: AnalysisContext) -> list[Finding]:
     # Only meaningful when DMARC did not pass, since a DMARC pass already
     # requires an aligned identifier.
     if dkim in _PASS and view.dkim_domain and from_org and not dmarc_ok:
-        if not D.same_org(view.dkim_domain, from_domain):
+        # Mail providers and ESPs sign on their customers' behalf as a matter
+        # of course - every Google Workspace domain signs via gappssmtp.com.
+        # Reporting that as a misaligned signature flags routine business mail.
+        signer = D.org_domain(view.dkim_domain)
+        if signer not in _DELEGATED_SIGNERS and not D.same_org(view.dkim_domain, from_domain):
             out.append(Finding(
                 code="DKIM_UNALIGNED", layer=0, severity=Severity.MEDIUM, weight=0.50,
                 human_text=f"This message is signed, but by {D.org_domain(view.dkim_domain)} "

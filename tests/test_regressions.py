@@ -109,8 +109,8 @@ def test_old_contacts_still_get_a_profile():
         store.upsert_message(acct, {"id": gid, "labelIds": ["INBOX"],
                                     "received_at": when}, parse_rfc822(raw), raw)
 
-    for i in range(8):
-        add(f"old{i}", "old@friend.com", f"2020-01-0{i + 1}T09:00:00+00:00")
+    for i in range(14):  # must clear MIN_SAMPLES_TECHNICAL
+        add(f"old{i}", "old@friend.com", f"2020-01-{i + 1:02d}T09:00:00+00:00")
     for i in range(4100):
         add(f"new{i}", f"bulk{i % 50}@spam.com", "2025-09-01T09:00:00+00:00")
 
@@ -127,7 +127,7 @@ def test_profile_build_does_not_rescan_the_mailbox_per_contact():
     store = Store(Path(tmp) / "t.db")
     acct = store.get_or_create_account("me@x.com")
     for c in range(30):
-        for m in range(8):
+        for m in range(14):  # must clear MIN_SAMPLES_TECHNICAL
             raw = (f"From: P{c} <p{c}@d{c}.com>\r\nTo: me@x.com\r\nSubject: s\r\n"
                    f"Message-ID: <a{m}@d{c}.com>\r\nX-Mailer: Mail\r\n\r\n"
                    f"this message has plenty of words in it to serve as a style sample").encode()

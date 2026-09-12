@@ -12,6 +12,10 @@
 credentials/
 client_secret*.json
 token*.json
+.env
+.env.*
+*.key
+anthropic*.json
 
 # Generated output
 demo*/

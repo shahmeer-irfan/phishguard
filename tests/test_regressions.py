@@ -83,6 +83,47 @@ def test_ordinary_prose_is_left_alone():
         assert redact(text, set()) == text, f"over-redacted: {text!r}"
 
 
+# Found only by running Layer 4 against a real mailbox: password-reset links,
+# magic-link logins and cloud-console verification mails carry live single-use
+# credentials in the query string. A real AWS root-account email was sending
+# `?token=...&key=...` straight to the API.
+CREDENTIAL_URLS = [
+    "Verify at https://signin.aws.amazon.com/noMfa?action=verifyEmail"
+    "&token=LQDSyIkrHF3LaDjz0bU2F7wPFf&key=AQEDAHjMwJfuh-ohxMDQKpdYSt8 now",
+    "Reset here: https://account.example.com/reset/eyJhbGciOiJIUzI1NiJ9abcdefgh",
+    "Sign in: https://app.example.com/magic?t=9f8e7d6c5b4a3f2e1d0c9b8a7",
+    "Confirm: https://example.com/verify?email=x@y.com&code=884213",
+]
+
+
+def test_url_credentials_never_leave_the_device():
+    for text in CREDENTIAL_URLS:
+        out = redact(text, set())
+        assert "token=" not in out and "key=" not in out and "code=" not in out
+        assert not leaks(text, out), f"{text!r} leaked {leaks(text, out)}"
+
+
+def test_url_host_survives_so_intent_is_still_answerable():
+    """Stripping must not destroy the question. Where a link points is the
+    whole signal; the credential attached to it never is."""
+    out = redact("Click https://signin.aws.amazon.com/noMfa?token=SECRET123456", set())
+    assert "signin.aws.amazon.com" in out
+    assert "SECRET123456" not in out
+
+
+def test_markup_noise_is_stripped_before_sending():
+    """Outlook conditional comments are downlevel-revealed, so their contents
+    reach any parser as real text. It is noise, it costs tokens, and it dilutes
+    the prose the model is meant to read."""
+    from phishguard.detect.redact import strip_markup
+
+    raw = ('Keep track <!--[if !mso]> <!--> <div style="height:48px;width:268px;'
+           'color:red;"> of your account')
+    out = strip_markup(raw)
+    assert "Keep track" in out and "of your account" in out
+    assert "mso" not in out and "width:268px" not in out
+
+
 def test_request_shape_survives_redaction():
     """Redacted text still has to be classifiable, or Layer 4 is switched off."""
     out = redact("Please change the account to GB29NWBK60161331926819 before Friday "

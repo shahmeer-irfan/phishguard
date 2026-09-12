@@ -1,0 +1,39 @@
+# Never commit mail data or credentials.
+#
+# The store holds full message bodies, headers and attachment metadata for
+# every message indexed, and token.json is a standing read grant over the
+# whole mailbox. Neither belongs in version control, and a repo that has ever
+# contained them stays compromised after deletion because git keeps history.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+credentials/
+client_secret*.json
+token*.json
+
+# Generated output
+demo*/
+viewer_out/
+*.html
+!templates/*.html
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

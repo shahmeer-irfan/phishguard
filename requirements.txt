@@ -1,0 +1,14 @@
+# Phases 0-2 need only the Google client libraries; everything else is stdlib.
+google-api-python-client>=2.120.0
+google-auth>=2.28.0
+google-auth-oauthlib>=1.2.0
+
+# Optional: QR decoding for quishing detection (Layer 3).
+# Without it the pipeline still flags image-borne messages, it just cannot say
+# what the code contains. Chosen over pyzbar because it needs no native library
+# beyond its own wheel, which matters inside a signed .app bundle.
+# opencv-python-headless>=4.9.0
+# numpy>=1.26.0
+
+# Phase 3+ (not imported yet, listed so the environment is stable):
+# sentence-transformers  sqlite-vec  lightgbm  rapidfuzz  oletools
